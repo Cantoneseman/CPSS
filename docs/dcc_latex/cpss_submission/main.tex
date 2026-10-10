@@ -1,0 +1,224 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% DCC manuscript -- CPSS. Quantitative results use the audited 2026-10-04 package.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\documentclass[smallabstract,smallcaptions]{dccpaper}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{float}
+\usepackage{placeins}
+
+\setlength{\emergencystretch}{2em}
+
+% Numbered hierarchy follows the published DCC 2024 paper style. Keep the
+% bundled DCC class's typography and give major headings slightly more air.
+\renewcommand{\Section}[1]{\vspace*{-0.05in}\section{#1}\vspace{0.025in}}
+\renewcommand{\SubSection}[1]{\vspace*{-0.125in}\subsection{#1}}
+
+\begin{document}
+
+\title{\textbf{CPSS: Cost-Aware Compression Decisions\\for End-to-End Scientific Data Transfer}}
+
+\author{%
+Jiekun Su, Yinyin Fu, Sen Jiang, and Rui Xu\\[0.5em]
+{\small\begin{minipage}{0.96\linewidth}\centering
+Sun Yat-sen University, China\\
+Emails: sujk@mail2.sysu.edu.cn, fuyj27@mail2.sysu.edu.cn, jiangs3@mail2.sysu.edu.cn, xurui66@mail2.sysu.edu.cn
+\end{minipage}}
+}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+Lossless compression can reduce network traffic while delaying data availability. We present CPSS, a system for one-shot scientific data transfer that frames compression as a decision about when data become usable at the destination. We formalize this objective across probing, encoding, transfer, decoding, and reconstruction, and derive a bandwidth break-even condition linking local codec work to saved transfer time. CPSS uses bounded probes to estimate candidate pipeline costs and selects either lossless compression or direct Raw transfer. Across ten scientific/HPC and scientific-text workloads, CPSS achieves up to 4.74-fold speedup over Raw (NOAA) and reduces completion time by up to 17.9\% relative to fixed Zstandard-3 (NYX). This perspective makes compression a conditional transfer action governed by data characteristics and transfer cost.
+\end{abstract}
+
+\Section{Introduction}
+
+Scientific workflows routinely move snapshots, checkpoints, meshes, and tabular products between storage and compute sites. These transfers are often one-shot: the receiver needs a usable directory tree before the next analysis stage can start, while the sender has little opportunity to amortize a model over repeated transfers. Prior work on configurable and adaptive compression has shown that reducing transferred bytes is only one part of the end-to-end cost \cite{krintz2001,wiseman2004,knutsson1999}. In this setting three challenges interact: workload heterogeneity makes one fixed codec unreliable; local encoding and receiver reconstruction compete with the saved wire time; and a selector must decide from a small sample without turning probing into the dominant cost. Scientific data also expose structure that general-purpose byte-stream codecs may miss \cite{burtscher2009,lindstrom2006,zfp2014}.
+
+MLcomp uses compression-behavior features, sequential feature selection (SFS), and one-nearest-neighbor (1NN) prediction to identify effective compression pipelines \cite{burtchell2024mlcomp}. Its compression-ratio objective favors compact output. Our study of an SFS+1NN selector over four codecs illustrates why a transfer decision must consider additional costs: the selector favors XZ on held-out prefixes, whereas measured transfer times favor Zstandard. For one-shot transfer, the relevant objective is the time until a usable destination tree exists: probing, codec execution, wire time, decoding, and reconstruction all lie on this critical path.
+
+We call the resulting system CPSS. It places data-dependent compression selection within the complete transfer path, using online cost estimates over an action set that includes the identity representation (Raw). For a one-shot transfer, Raw is a normal candidate; choosing it after probing still incurs the probe cost. CPSS samples the input, estimates candidate lossless-pipeline costs, and prepares either the original directory tree or a self-describing compressed bundle. A fixed cross-node transfer path moves the selected representation, and the receiver reconstructs the tree when needed.
+
+The paper makes three contributions. First, it formalizes the one-shot transfer objective and derives a bandwidth break-even condition from estimated local work and payload bytes. Second, it presents a bounded-probe decision path that selects Raw or compression and integrates the selected representation with receiver reconstruction. Third, it evaluates the decision against practical fixed codecs across ten workloads, with targeted studies of the codec pool, Raw bypass, probe budget, and bandwidth input.
+
+\Section{Related Work}
+
+Dynamic selectors have long treated transfer delay, decoding, resource state, and sampling as system costs \cite{krintz2001,wiseman2004,knutsson1999}. MLcomp learns a mapping from compression behavior to pipelines with high compression ratios \cite{burtchell2024mlcomp}. CPSS combines online cost estimates, a Raw action, and directory reconstruction for one-shot scientific transfers; probe cost is charged to the same completion-time objective. Its fixed-codec baselines, gzip, LZ4, Zstandard, and XZ, offer different local-work/payload tradeoffs \cite{gzip,lz4,zstd,xz}. Scientific compressors exploit numerical structure: FPC and related lossless methods target floating-point data \cite{burtscher2009,lindstrom2006,azami2025}, while fixed-rate and error-bounded array compression permit different accuracy contracts \cite{zfp2014,sz3_2023}. Our evaluation uses lossless byte-stream pipelines so that numerical and text files share the same reconstruction contract.
+
+\Section{Problem Formulation}
+
+Let $D$ denote an input directory tree, $S(D)$ its raw byte count, $B$ the effective transfer bandwidth, and $\mathcal{P}$ a fixed set of eligible lossless pipelines. The system action set is
+\begin{equation}
+\mathcal{A}=\{\mathrm{Raw}\}\cup\{\mathrm{Compress}(p):p\in\mathcal{P}\}.
+\end{equation}
+For a compression pipeline $p$, the measured time from full-data preparation through receiver availability is
+\begin{equation}
+T(p,D)=T_{\mathrm{enc}}(p,D)+T_{\mathrm{wire}}(p,D)
+       +T_{\mathrm{dec}}(p,D)+T_{\mathrm{rebuild}}(p,D),
+\end{equation}
+where $T_{\mathrm{wire}}$ is measured on the transferred representation and therefore includes bundle and manifest bytes. For Raw, $T(\mathrm{Raw},D)$ is the time to transfer the original tree and make it available at the destination; it has no codec stage.
+
+Let $\mathcal{S}_k$ be the sampled windows, with total size $S(\mathcal{S}_k)$, and $b_p(s)$ the encoded size of window $s$. Scaling sample measurements to the full input gives
+\begin{equation}
+\widehat{L}_p(D)=\frac{S(D)}{S(\mathcal{S}_k)}\sum_{s\in\mathcal{S}_k}\left(t_{\mathrm{enc}}(p,s)+t_{\mathrm{dec}}(p,s)\right),\qquad
+\widehat{W}_p(D)=\frac{S(D)}{S(\mathcal{S}_k)}\sum_{s\in\mathcal{S}_k}b_p(s).
+\end{equation}
+The runtime cost estimate is $\widehat{C}_p(D,B)=\widehat{L}_p(D)+\widehat{W}_p(D)/B$, while $\widehat{C}_{\mathrm{Raw}}(D,B)=S(D)/B$. It guides the online action; the selected action is then evaluated by the measured $T_{\mathrm{ready}}$ over the complete transfer path. For a fixed candidate $p$, compression passes the guard when
+\begin{equation}
+\widehat{L}_p(D)+\frac{\widehat{W}_p(D)}{B}<\theta\frac{S(D)}{B}
+\quad\Longleftrightarrow\quad
+B<\frac{\theta S(D)-\widehat{W}_p(D)}{\widehat{L}_p(D)},
+\label{eq:break-even}
+\end{equation}
+provided $\widehat{L}_p(D)>0$ and $\theta S(D)>\widehat{W}_p(D)$. This break-even rate makes the tradeoff explicit: greater local codec work narrows the bandwidth range in which compression is predicted to help, while greater byte savings widens it. From valid sampled candidates, CPSS selects
+\begin{equation}
+\begin{aligned}
+\hat p&=\arg\min_{p\in\mathcal{P}_{\mathrm{valid}}}\widehat{C}_p(D,B),\\
+\theta&=\frac{1-\gamma}{\rho_{\min}},\\
+\hat a&=\begin{cases}
+\mathrm{Compress}(\hat p), & \widehat{C}_{\hat p}<\theta\widehat{C}_{\mathrm{Raw}},\\
+\mathrm{Raw}, & \text{otherwise}.
+\end{cases}
+\end{aligned}
+\end{equation}
+where $\rho_{\min}\ge 1$ is the required predicted speedup and $\gamma\in[0,1)$ is a guard margin; if no valid estimate is available, the policy bypasses compression. The main experiment uses $\rho_{\min}=1$ and $\gamma=0$. Probe cost is incurred before either action and remains part of the one-shot objective, even though it does not change the post-probe ranking. The measured CPSS outcome is
+\begin{equation}
+\begin{aligned}
+T_{\mathrm{ready}}^{\mathrm{CPSS}}(D)
+ &=T_{\mathrm{scan}}(D)+T_{\mathrm{probe}}(D)+T(\hat a,D),\\
+G(D)&=T_{\mathrm{ready}}(\mathrm{Raw},D)-T_{\mathrm{ready}}^{\mathrm{CPSS}}(D).
+\end{aligned}
+\end{equation}
+Here $T(\hat a,D)$ uses the full measured transfer path, including bundle metadata and receiver reconstruction when compression is selected; $G(D)>0$ denotes a net one-shot benefit. Every Raw, fixed-codec, and CPSS end-to-end comparison uses this same boundary.
+
+\Section{CPSS System Design}
+
+\SubSection{System boundary and timing boundary}
+Figure~\ref{fig:architecture} separates the bounded decision prepass from full-data execution. Samples inform the cost estimate; the resulting choice routes the full tree through compression or Raw, after which both actions share the configured transfer and receiver path.
+
+\begin{figure}[!ht]
+\begin{center}
+\includegraphics[width=\linewidth]{Figures/cpss_architecture_color.pdf}
+\end{center}
+\caption{CPSS uses bounded probes to estimate candidate encode, payload-transfer, and decode costs, then applies a Raw-bypass guard. The selected full-data representation follows a shared transfer/receiver path; scan and probe time are charged on either branch.}
+\label{fig:architecture}
+\end{figure}
+
+\noindent The principal system metric is $T_{\mathrm{ready}}$: elapsed time from the beginning of the method's measured path until the destination contains a usable reconstructed tree. For a fixed codec this includes full-data preparation, transfer, decoding, and reconstruction. For CPSS it additionally includes scan and probe, whether the eventual action is Raw or compressed. Independent verification extends the boundary to $T_{\mathrm{verified}}$ but is not mixed into the primary performance metric. Figure~\ref{fig:timing-boundary} summarizes the matched boundaries used throughout the evaluation.
+
+\begin{figure}[!ht]
+\begin{center}
+\includegraphics[width=\linewidth]{Figures/timing_boundary_color.pdf}
+\end{center}
+\caption{Matched $T_{\mathrm{ready}}$ boundary. Raw pays for transfer and materialization; a fixed codec adds full-data encoding; CPSS adds scan/probe and performs full-data encoding only after choosing compression. Independent SHA-256 verification is reported separately.}
+\label{fig:timing-boundary}
+\end{figure}
+
+Scan/probe covers directory enumeration, block selection, and candidate trials; CPSS pays this cost even when it chooses Raw. Fixed codecs encode all data, whereas CPSS encodes only after choosing compression. Transfer includes the selected representation and metadata. Receiver decode/rebuild ends when the usable tree is materialized, and Raw still pays common receive/materialization work. Thus the same $T_{\mathrm{ready}}$ boundary captures the tradeoff between wire time, which dominates on slower links, and local work, which matters more as bandwidth rises. SHA-256 verification follows $T_{\mathrm{ready}}$ and is reported separately.
+
+\SubSection{Input inspection and sampling}
+CPSS records file/block metadata and samples up to two distinct 128 MiB blocks, taking one 4 MiB aligned window per block (50 of 51 main runs use two windows). It tests Zstandard, LZ4, zlib, and delta followed by Zstandard, recording encoded size and encode/decode time. Sample costs are scaled to the input and combined with projected payload transfer; CPSS chooses the lowest-cost eligible pipeline and applies the Raw guard. Bundle construction and directory rebuild are measured in full-data $T_{\mathrm{ready}}$, while scan/probe time is charged on either branch. The policy uses online measurements, and the candidate pool is general-purpose lossless byte-stream compression.
+
+\SubSection{Block packaging and reconstruction}
+Compressed blocks carry pipeline identifiers, sizes, paths, and offsets; a manifest maps them back to the source tree. The receiver restores those paths, while Raw bypasses codec reconstruction. Bundle and manifest bytes count toward transfer volume; the comparison disables deduplication, includes transfer CRC32C, and reports independent SHA-256 separately.
+
+\Section{Experimental Methodology}
+
+We organize the evaluation around four questions: does CPSS improve destination-ready time against Raw and fixed codecs; does the action pool retain a useful Raw branch; how much time does bounded probing add and how does its budget affect the action; and how does the bandwidth supplied to the cost model alter the decision? The main, codec-pool/Raw-bypass, sampling, and assumed-bandwidth studies answer these questions in order.
+
+\SubSection{Workloads and deployment}
+Ten workloads cover seven scientific/HPC numerical datasets (CESM, Hurricane Isabel, Miranda, NYX, HACC, SCALE-LETKF, ExaFEL) and three scientific-text datasets (RCSB mmCIF, NCBI GRCh38 FASTA, NOAA GSOD CSV). Raw trees span 0.13--6.31 GiB (24.31 GiB total; 1.88 GiB median) and contain 1--79 files. On the Shenzhen--Shanghai GridFlux deployment, we compare Raw, gzip-6, LZ4-default, Zstandard-3, XZ-6, and CPSS using 128 MiB blocks, single-threaded codecs, two connections, file parallelism two, CRC32C, and no deduplication. The 100 Mbps value is a cost-model input, not rate shaping. CESM, Miranda, and NOAA have ten repetitions per method; the other workloads have three (306 main records total), summarized by workload medians.
+
+For the ratio/time comparison, an SFS+1NN selector inspired by MLcomp uses two selected features from four inverse-ratio measurements on the same 4 MiB prefix (Zstandard, LZ4, zlib, XZ). Eight workload prefixes of up to 32 MiB are split into four training, two validation, and two held-out objects. Held-out results are evaluated offline; three-repeat GridFlux trials on ExaFEL and RCSB compare Raw, fixed Zstandard, fixed XZ, and CPSS at a 100 Mbps estimate. A three-workload common-codec pool (CESM, Miranda, NOAA) compares all six methods with three repetitions. CPSS probes Zstandard, LZ4, zlib, and XZ in this pool, and Zstandard, LZ4, zlib, and delta+Zstandard in the main experiment.
+
+\SubSection{Metrics and statistical treatment}
+The primary outcome is $T_{\mathrm{ready}}$; we record byte counts, component times, integrity, and status, distinguishing planned Raw choices from failure fallbacks.
+
+For dataset $d$ and method $m$, speedup relative to Raw is
+\begin{equation}
+S_{m,d}=\frac{\operatorname{median}(T_{\mathrm{ready}}(\mathrm{Raw},d))}
+{\operatorname{median}(T_{\mathrm{ready}}(m,d))}.
+\end{equation}
+We summarize each dataset by its repetition median and report summed-median ratios, geometric-mean speedup, and run-to-run spread. Peak gains are maxima across per-workload median comparisons; paired comparisons use matched repetitions and the same timing boundary.
+
+The sampling study uses 128 MiB CESM, Miranda, and NOAA inputs, caps of 1/2/5 aligned 4 MiB windows, and three repetitions paired with direct Raw and fixed Zstandard-3. For each pair $i$, the action-match rate is the fraction where CPSS selects the faster measured Raw/Zstandard action; excess time is $(T_i^{\mathrm{CPSS}}/T_i^\star-1)\times100\%$. The bandwidth study reuses these inputs with 10/100 Mbps estimator settings. We also replay selected representations over \texttt{scp} (27 trials) and test Raw bypass on 6.28 GiB HACC and 3 GiB NYX inputs (three runs per method).
+
+\FloatBarrier
+\Section{Evaluation Results}
+
+\SubSection{Main end-to-end outcome}
+Across ten workloads, CPSS achieves its largest speedup over Raw on NOAA: 4.74-fold, reducing median completion time from 75.75 s to 15.98 s (78.9\%). Its largest reduction relative to fixed Zstandard-3 is 17.9\% on NYX, from 331.04 s to 271.82 s. Table~\ref{tab:main-results} summarizes all 306 completed records by summing per-workload medians; Figure~\ref{fig:end-to-end} shows the variation across workloads. CPSS beats Raw on seven of ten datasets and reduces aggregate $T_{\mathrm{ready}}$ by 9.34\% versus Raw and 8.39\% versus fixed Zstandard-3. Its geometric-mean speedup is 1.453 (1.427 for Zstandard-3); the median relative spread over repeats is 2.07\% (maximum 12.95\%).
+
+\begin{table}[t]
+\centering
+\caption{Main end-to-end results. Speedup is the ratio of median sums; wins and losses count workloads relative to Raw.}
+\label{tab:main-results}
+\vspace{0.06in}
+\small
+\begin{tabular}{lrrr}
+\toprule
+Method & Median-sum $T_{\mathrm{ready}}$ (s) & Speedup vs. Raw & Wins--losses \\
+\midrule
+Raw & 2230.43 & 1.000 & --- \\
+Zstandard-3 & 2207.36 & 1.010 & 6--4 \\
+CPSS-adaptive & \textbf{2022.18} & \textbf{1.103} & \textbf{7--3} \\
+LZ4 & 2537.61 & 0.879 & 4--6 \\
+gzip-6 & 3234.53 & 0.690 & 2--8 \\
+XZ-6 & 14153.29 & 0.158 & 0--10 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\SubSection{Compression-ratio selection and end-to-end availability}
+The held-out SFS+1NN selector chooses XZ on both test prefixes, attaining relative compression ratio 1.00 within its four-codec pool. Collecting all four candidate probe features takes 2.04 s on ExaFEL and 1.72 s on RCSB/mmCIF. In separate end-to-end trials on these workloads, fixed XZ has median $T_{\mathrm{ready}}$ of 22.01 s and 18.09 s; CPSS selects Zstandard and completes in 2.93 s and 1.80 s including its scan and probe, while fixed Zstandard takes 1.85 s and 1.05 s and Raw takes 2.29 s and 2.34 s. The selector's compression-ratio optimum and CPSS's transfer-time choice therefore answer different questions: XZ minimizes output, while the complete transfer path also charges codec and decision work.
+
+In the common-codec pool, CPSS's median-sum $T_{\mathrm{ready}}$ is 374.06 s, compared with 427.26 s for Raw and 386.62 s for fixed Zstandard-3; LZ4, gzip-6, and XZ-6 take 438.07 s, 548.79 s, and 2425.67 s. CPSS selects Raw in five of nine runs and Zstandard in four. Its aggregate advantage is concentrated in NOAA, where adaptation selects Zstandard; CPSS is within 0.4\% of Raw on Miranda and 1.5\% slower than Raw on CESM. This targeted comparison places the adaptive action alongside commonly used fixed codecs without conflating it with the full ten-workload result.
+
+\SubSection{Workload dependence and Raw bypass}
+In the ten-workload experiment, CPSS selects compression in 32 runs and Raw in 19; all compressed actions use Zstandard. This is the selected pipeline among Zstandard, LZ4, zlib, and delta followed by Zstandard. Fixed Zstandard is the only fixed codec below Raw in aggregate: LZ4 leaves more bytes to transfer, whereas XZ adds substantial encoding time. Figure~\ref{fig:end-to-end}(b) shows the balance.
+
+Figure~\ref{fig:end-to-end}(c) shows per-workload outcomes. CPSS bypasses compression on HACC, Miranda, NYX, and SCALE-LETKF. On these workloads it remains within 0.8\% of Raw and reduces completion time by 5.9--17.9\% relative to fixed Zstandard. Summing per-workload medians within each branch, compressed CPSS takes 1.86\% longer than fixed Zstandard, and the Raw branch including probe stays within 0.18\% of direct Raw. Figure~\ref{fig:end-to-end}(d) reports median probe time as a fraction of CPSS $T_{\mathrm{ready}}$.
+
+\begin{figure}[!t]
+\begin{center}
+\includegraphics[width=\linewidth]{Figures/fig3_end_to_end.pdf}
+\end{center}
+\caption{End-to-end performance and decision behavior. (a) Aggregate speedup over Raw; CPSS is shown with a filled marker and fixed methods with open markers. (b) Median-sum $T_{\mathrm{ready}}$; local share is the fraction remaining after subtracting summed workload wire-time medians. (c) Per-workload reduction relative to Raw in separate columns with identical scales; gray bars show fixed Zstandard-3, black bars CPSS compression, and open diamonds CPSS Raw bypass. Positive values indicate shorter completion times. (d) Probe share by workload, aligned with (c). Numerical/HPC workloads precede scientific-text cases.}
+\label{fig:end-to-end}
+\end{figure}
+
+\SubSection{Decision sensitivity and probe cost}
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\linewidth]{Figures/fig4_experimental_analysis.pdf}
+\caption{Additional system evidence. (a) Median-sum $T_{\mathrm{ready}}$ on the three-workload common-codec pool. (b) Workload medians on HACC and NYX, where CPSS selects Raw in every run; labels above groups list Raw/Zstandard/CPSS times. (c) Median-sum $T_{\mathrm{ready}}$ when the selector is given 10 or 100 Mbps as its bandwidth assumption; all transfers use the same unshaped GridFlux path, and x-axis labels give CPSS action counts. (d) Median excess $T_{\mathrm{ready}}$ over the paired faster measured Raw/Zstandard reference by probe-window cap. Labels give actual sampled bytes and probe time; each cap has nine paired workload/repetition observations.}
+\label{fig:additional-evidence}
+\end{figure}
+On the same unshaped path, changing the estimator's assumption from 10 to 100 Mbps changes CPSS from compression in all nine runs to Raw in six. At the 10 Mbps assumption, median-sum times are 48.70 s for Raw, 39.05 s for Zstandard, and 42.47 s for CPSS; at 100 Mbps they are 49.62 s, 38.55 s, and 42.18 s. CPSS reduces completion time relative to Raw by 12.8\% and 15.0\%, with 8.8\% and 9.4\% additional time relative to fixed Zstandard. The changed action mix shows the cost model's response to its bandwidth input on the same physical path.
+
+For sampling caps of 1, 2, and 5 windows, median actual sampling is 4, 8, and 8 MiB, with 0.67, 0.77, and 0.79 s median probe time. Even with the 5-window cap, these runs use at most two windows. CPSS matches the lower-$T_{\mathrm{ready}}$ action among paired Raw and Zstandard runs in 4 of 9 pairs (44.4\%) at each cap; median excess $T_{\mathrm{ready}}$ over that paired reference is 15.9\%, 12.2\%, and 6.2\%. The selected action is unchanged for each workload across all three caps, while the additional windows increase probe time only modestly.
+
+The separate HACC/NYX Raw-bypass runs reinforce the endpoint behavior on large numerical workloads: CPSS chooses Raw in all six runs and remains within 0.05\% of direct Raw in the aggregate, while fixed Zstandard takes 15.3\% longer. The adaptive policy preserves the uncompressed path when its measured candidate costs favor it.
+
+\SubSection{Integrity and cross-transport check}
+All 306 main and 231 supplementary GridFlux records pass round-trip checks. All 27 SCP replays complete with correct reconstructed byte counts, retaining gains on NOAA and remaining close to Raw on Miranda. Main-run median probe time is 1.10 s; 50 of 51 runs use two 4 MiB windows.
+
+\FloatBarrier
+\Section{Conclusion}
+
+CPSS treats compression as a conditional transfer action, coupling sampled codec costs with the time until data become usable at the destination. Across ten workloads, it achieves up to 4.74-fold speedup over Raw on NOAA and up to 17.9\% lower completion time than fixed Zstandard-3 on NYX. Targeted studies quantify Raw bypass, probe cost, and the response to bandwidth input. This formulation connects data-dependent compression selection to the complete one-shot transfer path.
+
+\FloatBarrier
+\section*{References}
+\bibliographystyle{IEEEbib}
+\bibliography{refs}
+
+\end{document}

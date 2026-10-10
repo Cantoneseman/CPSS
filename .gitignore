@@ -1,0 +1,45 @@
+# Python and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Local datasets and experiment outputs
+Dataset/
+RawDataset/
+MediumDataset/
+NewDataset/
+ExperimentRecords/
+tmp/
+qa_render/
+figures_draft/
+figures_paper/
+
+# Build products and manuscript scratch files
+*.aux
+*.log
+*.out
+*.toc
+*.bbl
+*.blg
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+*.eps
+*.pdf
+*.png
+*.zip
+
+# Local IDE/system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+AGENTS.md
+.*.bkp

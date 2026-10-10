@@ -1,0 +1,226 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% CPSS DCC manuscript -- Chinese review translation; results follow the audited 2026-10-04 package.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\documentclass[smallabstract,smallcaptions]{dccpaper}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage{xeCJK}
+\setCJKmainfont{Noto Serif SC}[BoldFont={Noto Serif SC:style=Bold},ItalicFont={Noto Serif SC:style=Regular}]
+\setCJKmonofont{Microsoft YaHei}
+\renewcommand{\figurename}{图}
+\renewcommand{\tablename}{表}
+\renewcommand{\abstractname}{摘要}
+\renewcommand{\refname}{参考文献}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\Section}[1]{\vspace*{-0.05in}\section{#1}\vspace{0.025in}}
+\renewcommand{\SubSection}[1]{\vspace*{-0.125in}\subsection{#1}}
+
+\begin{document}
+
+\title{\textbf{CPSS：面向端到端科学数据传输的成本感知压缩决策}}
+
+\author{%
+Jiekun Su、Yinyin Fu、Sen Jiang、Rui Xu\\[0.5em]
+{\small\begin{minipage}{0.96\linewidth}\centering
+Sun Yat-sen University, China\\
+邮箱：sujk@mail2.sysu.edu.cn、fuyj27@mail2.sysu.edu.cn、jiangs3@mail2.sysu.edu.cn、xurui66@mail2.sysu.edu.cn
+\end{minipage}}
+}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+无损压缩可以减少网络传输量，却未必让数据更早可用。本文提出面向一次性科学数据传输的 CPSS 系统，从目的端数据何时可用的视角定义压缩决策。我们将探测、编码、传输、解码和重建纳入统一目标，并推导连接本地编解码开销与网络时间节省的带宽盈亏平衡条件。CPSS 通过有界探测估计候选流水线成本，进而选择无损压缩或直接裸传（Raw）。在 10 个科学/HPC 与科学文本工作负载中，CPSS 相对 Raw 的加速比最高达到 4.74 倍（NOAA），相对固定 Zstandard-3 的完成时间最高缩短 17.9\%（NYX）。这一视角将压缩视为由数据特征与传输成本共同决定的条件性传输动作。
+\end{abstract}
+
+\Section{引言}
+
+科学工作流经常需要在存储站点与计算站点之间传输快照、检查点、网格和表格产品。这类传输往往是一次性的：接收端需要先获得可用目录树，后续分析才能启动，发送端也很难通过重复传输摊销选择模型。已有关于可配置和自适应压缩的研究表明，减少传输字节只是端到端成本的一部分 \cite{krintz2001,wiseman2004,knutsson1999}。在这一场景中有三项挑战相互作用：工作负载异质性使单一固定 codec 不够可靠；本地编码和接收端重建会与节省的网络时间竞争；选择器还必须从少量样本作出决策，而不能让探测本身成为主要开销。科学数据还包含通用字节流压缩器未必能利用的结构 \cite{burtscher2009,lindstrom2006,zfp2014}。
+
+MLcomp 使用压缩行为特征、顺序特征选择（SFS）与单近邻（1NN）预测来识别有效压缩流水线 \cite{burtchell2024mlcomp}，其压缩比目标偏向更紧凑的输出。我们在四种 codec 上构建的 SFS+1NN 选择器实验说明了传输决策为何需要考虑更多成本：选择器在留出前缀上偏向 XZ，而实测传输时间更有利于 Zstandard。因此，一次性传输的关键目标是目的端何时拥有可用目录树：探测、codec 执行、网络传输、解码和重建都处在这条关键路径上。
+
+我们将这一系统称为 CPSS。它将数据相关的压缩选择放入完整传输路径，以在线成本估计决定动作，并将恒等表示（Raw）纳入候选集合。对于一次性传输，Raw 是正常候选动作；探测后选择 Raw 仍需承担已经发生的探测成本。CPSS 对输入采样、估计候选无损流水线成本，并准备原始目录树或自描述压缩包。固定的跨节点传输路径移动所选表示，接收端在需要时重建目录树。
+
+本文有三项贡献。第一，形式化一次性传输目标，并从估计的本地处理与载荷字节推导带宽盈亏平衡条件。第二，设计有界探测决策路径以选择 Raw 或压缩，并将所选表示与接收端重建相结合。第三，通过 10 个工作负载上的实用固定 codec 对比，以及候选 codec、Raw 绕过、采样预算和带宽假设实验评估该决策。
+
+\Section{相关工作}
+
+已有自适应选择器将传输延迟、解码、资源状态和采样视为系统成本 \cite{krintz2001,wiseman2004,knutsson1999}。MLcomp 学习压缩行为到高压缩比流水线的映射 \cite{burtchell2024mlcomp}。CPSS 面向一次性科学数据传输，将在线成本估计、Raw 动作与目录树重建结合，并将探测成本计入同一完成时间目标。固定基线 gzip、LZ4、Zstandard 和 XZ 具有不同的本地处理/载荷权衡 \cite{gzip,lz4,zstd,xz}。科学压缩器进一步利用数值结构：FPC 及相关无损方法面向浮点数据 \cite{burtscher2009,lindstrom2006,azami2025}，固定码率和误差有界数组压缩则允许不同的精度约束 \cite{zfp2014,sz3_2023}。本文使用无损字节流流水线，使数值文件与文本文件遵循一致的重建要求。
+
+\Section{问题定义}
+
+令 $D$ 表示输入目录树，$S(D)$ 表示其原始字节数，$B$ 表示有效传输带宽，$\mathcal{P}$ 表示固定的候选无损流水线集合。系统动作集合为
+\begin{equation}
+\mathcal{A}=\{\mathrm{Raw}\}\cup\{\mathrm{Compress}(p):p\in\mathcal{P}\}.
+\end{equation}
+对于压缩流水线 $p$，完整数据从准备到接收端可用的实测时间为
+\begin{equation}
+T(p,D)=T_{\mathrm{enc}}(p,D)+T_{\mathrm{wire}}(p,D)
+       +T_{\mathrm{dec}}(p,D)+T_{\mathrm{rebuild}}(p,D),
+\end{equation}
+其中 $T_{\mathrm{wire}}$ 根据实际传输表示测量，因此包括压缩包和清单字节。对于 Raw，$T(\mathrm{Raw},D)$ 是传输原始目录树并使其在目的端可用的时间，不包含编码阶段。
+
+令 $\mathcal{S}_k$ 表示采样窗口集合，其总大小为 $S(\mathcal{S}_k)$；$b_p(s)$ 表示窗口 $s$ 经流水线 $p$ 编码后的字节数。将样本测量缩放至完整输入得到
+\begin{equation}
+\widehat{L}_p(D)=\frac{S(D)}{S(\mathcal{S}_k)}\sum_{s\in\mathcal{S}_k}\left(t_{\mathrm{enc}}(p,s)+t_{\mathrm{dec}}(p,s)\right),\qquad
+\widehat{W}_p(D)=\frac{S(D)}{S(\mathcal{S}_k)}\sum_{s\in\mathcal{S}_k}b_p(s).
+\end{equation}
+运行时成本估计为 $\widehat{C}_p(D,B)=\widehat{L}_p(D)+\widehat{W}_p(D)/B$，Raw 的估计为 $\widehat{C}_{\mathrm{Raw}}(D,B)=S(D)/B$。该估计用于在线动作选择，选中的动作随后在完整传输路径上以实测 $T_{\mathrm{ready}}$ 评价。对给定候选 $p$，满足以下条件时选择压缩：
+\begin{equation}
+\widehat{L}_p(D)+\frac{\widehat{W}_p(D)}{B}<\theta\frac{S(D)}{B}
+\quad\Longleftrightarrow\quad
+B<\frac{\theta S(D)-\widehat{W}_p(D)}{\widehat{L}_p(D)},
+\label{eq:break-even}
+\end{equation}
+其中 $\widehat{L}_p(D)>0$ 且 $\theta S(D)>\widehat{W}_p(D)$。该临界速率明确表示了两类成本的权衡：codec 本地处理越多，预测压缩有利的带宽范围越窄；节省字节越多，该范围越宽。CPSS 在有效采样候选中选择
+\begin{equation}
+\begin{aligned}
+\hat p&=\arg\min_{p\in\mathcal{P}_{\mathrm{valid}}}\widehat{C}_p(D,B),\\
+\theta&=\frac{1-\gamma}{\rho_{\min}},\\
+\hat a&=\begin{cases}
+\mathrm{Compress}(\hat p), & \widehat{C}_{\hat p}<\theta\widehat{C}_{\mathrm{Raw}},\\
+\mathrm{Raw}, & \text{otherwise}.
+\end{cases}
+\end{aligned}
+\end{equation}
+其中 $\rho_{\min}\ge 1$ 是所要求的最低预测加速比，$\gamma\in[0,1)$ 是保护余量；没有有效估计时，策略绕过压缩。主实验使用 $\rho_{\min}=1$、$\gamma=0$。探测发生在动作之前，是一次性系统成本；虽然它不改变探测后的动作排序，但仍计入最终目标。CPSS 的实测结果为
+\begin{equation}
+\begin{aligned}
+T_{\mathrm{ready}}^{\mathrm{CPSS}}(D)
+ &=T_{\mathrm{scan}}(D)+T_{\mathrm{probe}}(D)+T(\hat a,D),\\
+G(D)&=T_{\mathrm{ready}}(\mathrm{Raw},D)-T_{\mathrm{ready}}^{\mathrm{CPSS}}(D).
+\end{aligned}
+\end{equation}
+其中，$T(\hat a,D)$ 使用完整数据的实测传输路径；选择压缩时还包括压缩包元数据和接收端重建。$G(D)>0$ 表示一次性传输取得净收益。所有 Raw、固定 codec 与 CPSS 的端到端比较均使用同一计时边界。
+
+\Section{CPSS 系统设计}
+
+\SubSection{系统边界与计时边界}
+图~\ref{fig:architecture} 将有界决策预探测与完整数据执行分开：样本用于估计成本，随后为完整目录树选择压缩或 Raw；两种动作共用既定传输和接收端路径。
+
+\begin{figure}[t]
+\begin{center}
+\includegraphics[width=\linewidth]{Figures/cpss_architecture_color.pdf}
+\end{center}
+\caption{CPSS 通过有界探测估计候选方法的编码、载荷传输和解码成本，再应用 Raw 绕过门槛。选中的完整数据表示共用既定传输和接收端路径；扫描与探测开销计入两条分支。}
+\label{fig:architecture}
+\end{figure}
+
+\noindent 主要系统指标是 $T_{\mathrm{ready}}$：从方法测量路径开始，到目的端包含可用重建目录树的经过时间。固定压缩器包括完整数据准备、传输、解码和重建；CPSS 还包括扫描和探测，无论最后选择 Raw 还是压缩。独立校验扩展为 $T_{\mathrm{verified}}$，但不混入主要性能指标。图~\ref{fig:timing-boundary} 总结了实验中统一使用的计时边界。
+
+\begin{figure}[t]
+\begin{center}
+\includegraphics[width=\linewidth]{Figures/timing_boundary_color.pdf}
+\end{center}
+\caption{匹配的 $T_{\mathrm{ready}}$ 边界。Raw 需要传输和落盘；固定压缩器还需要完整数据编码；CPSS 额外支付扫描/探测，并且只有选择压缩后才进行完整数据编码。独立 SHA-256 校验单独报告。}
+\label{fig:timing-boundary}
+\end{figure}
+
+图~\ref{fig:timing-boundary} 中的阶段对应实际工作。扫描/探测包括目录枚举、分块选择和候选试跑；即使 CPSS 最终选择 Raw，这部分时间也计入。固定压缩器编码全部数据，CPSS 只有选择压缩后才进行完整数据编码。传输包括所选表示及元数据；接收端解码和重建以目录树可用为终点，Raw 同样需要接收和落盘。因此，同一个 $T_{\mathrm{ready}}$ 边界能够呈现网络时间与本地处理的权衡：慢链路上前者占主导，带宽升高后本地开销更显著。SHA-256 在 $T_{\mathrm{ready}}$ 之后单独校验。
+
+\SubSection{输入检查与采样}
+CPSS 记录文件/分块元数据，最多从两个不同的 128 MiB 执行块中各抽取一个 4 MiB 对齐窗口（51 次主实验中 50 次取两个窗口）。候选为 Zstandard、LZ4、zlib 及 delta+Zstandard，并测量编码后大小和编解码时间。系统按输入大小缩放样本成本，并结合预计载荷传输时间选择最低成本的有效流水线，再应用 Raw 绕过门槛。压缩包构建和目录重建在完整数据 $T_{\mathrm{ready}}$ 中实测；扫描/探测在两条分支均计入。运行时使用在线测量，候选集合是通用无损字节流流水线。
+
+\SubSection{分块封装与重建}
+压缩块携带流水线标识符、大小、路径和偏移量；清单将这些块映射回源目录树。接收端恢复路径，Raw 绕过编解码重建。压缩包和清单字节计入传输量；比较关闭重删、计入传输 CRC32C，并单独报告 SHA-256。
+
+\Section{实验方法}
+
+我们围绕四个问题组织实验：CPSS 相对 Raw 和固定 codec 是否改善目的端可用时间；动作集合是否保留有效 Raw 分支；有界探测增加多少时间以及预算如何影响动作；成本模型输入的带宽如何改变决策。主实验、共同 codec/Raw 绕过、采样和带宽假设实验依次回答这些问题。
+
+\SubSection{工作负载与部署}
+实验覆盖 7 个科学/HPC 数值数据集（CESM、Hurricane Isabel、Miranda、NYX、HACC、SCALE-LETKF、ExaFEL）和 3 个科学文本数据集（RCSB mmCIF、NCBI GRCh38 FASTA、NOAA GSOD CSV）。原始目录树为 0.13--6.31 GiB（总计 24.31 GiB，中位数 1.88 GiB），包含 1--79 个文件。深圳--上海 GridFlux 主实验比较 Raw、gzip-6、LZ4-default、Zstandard-3、XZ-6 和 CPSS；使用 128 MiB 分块、单线程 codec、两条连接、文件并行度 2、CRC32C，且关闭重删。100 Mbps 是成本模型输入，不是链路限速。CESM、Miranda、NOAA 每种方法重复 10 次，其余数据集重复 3 次，共 306 条主实验记录，按工作负载取中位数。
+
+压缩比/传输时间对照采用受 MLcomp 启发的 SFS+1NN：对同一 4 MiB 前缀运行 Zstandard、LZ4、zlib、XZ 得到四个逆压缩比特征，SFS 选出两个供 1NN 使用。八个工作负载的至多 32 MiB 前缀按 4/2/2 划分为训练、验证和留出对象；留出结果离线评估。ExaFEL 和 RCSB 的三重复 GridFlux 试验比较 Raw、固定 Zstandard、固定 XZ 和 CPSS；另在 CESM、Miranda、NOAA 上以三次重复比较全部六种方法。共同候选池探测 Zstandard、LZ4、zlib、XZ；主实验探测 Zstandard、LZ4、zlib、delta+Zstandard。
+
+\SubSection{指标与统计处理}
+主要指标为 $T_{\mathrm{ready}}$；同时记录字节数、各阶段时间、完整性和运行状态，并区分计划内 Raw 与失败回退。
+
+对于数据集 $d$ 和方法 $m$，相对 Raw 的 speedup 定义为
+\begin{equation}
+S_{m,d}=\frac{\operatorname{median}(T_{\mathrm{ready}}(\mathrm{Raw},d))}
+{\operatorname{median}(T_{\mathrm{ready}}(m,d))}.
+\end{equation}
+每个数据集按重复运行取中位数，并报告中位数求和之比、speedup 几何平均与重复间波动。最高收益为逐工作负载中位数比较的最大值；配对比较使用相同重复标识和计时边界。
+
+采样实验在 128 MiB CESM、Miranda、NOAA 输入上使用 1/2/5 个对齐的 4 MiB 窗口上限，各重复 3 次，并与配对的直接 Raw、固定 Zstandard-3 比较。动作一致率表示 CPSS 选择每对实测 Raw/Zstandard 中较快动作的比例；额外时间为 $(T_i^{\mathrm{CPSS}}/T_i^\star-1)\times100\%$。带宽实验复用这些输入，比较 10/100 Mbps 估计器设定。另以 27 次 SCP 重放检查所选表示的传输与解包，并在 6.28 GiB HACC、3 GiB NYX 上进行三重复 Raw 绕过实验。
+
+\FloatBarrier
+\Section{实验结果}
+
+\SubSection{主要端到端结果}
+在 10 个工作负载中，CPSS 相对 Raw 的最高加速比来自 NOAA：4.74 倍，中位完成时间从 75.75 秒降至 15.98 秒，缩短 78.9\%。相对固定 Zstandard-3 的最高时间降幅来自 NYX：从 331.04 秒降至 271.82 秒，缩短 17.9\%。表~\ref{tab:main-results} 对全部 306 条完成记录按工作负载取中位数后求和；图~\ref{fig:end-to-end} 展示工作负载间的差异。CPSS 在 10 个数据集中有 7 个优于 Raw，聚合 $T_{\mathrm{ready}}$ 相对 Raw 降低 9.34\%，相对固定 Zstandard-3 降低 8.39\%。其 speedup 几何平均为 1.453（Zstandard-3 为 1.427）；重复间相对波动中位数为 2.07\%，最大值为 12.95\%。
+
+\begin{table}[t]
+\centering
+\caption{主要端到端结果。Speedup 为中位数之和的比值；胜负按各工作负载相对 Raw 的结果计数。}
+\label{tab:main-results}
+\vspace{0.06in}
+\small
+\begin{tabular}{lrrr}
+\toprule
+方法 & 中位数求和 $T_{\mathrm{ready}}$（秒） & 相对 Raw 的 Speedup & 胜--负 \\
+\midrule
+Raw & 2230.43 & 1.000 & --- \\
+Zstandard-3 & 2207.36 & 1.010 & 6--4 \\
+CPSS-adaptive & \textbf{2022.18} & \textbf{1.103} & \textbf{7--3} \\
+LZ4 & 2537.61 & 0.879 & 4--6 \\
+gzip-6 & 3234.53 & 0.690 & 2--8 \\
+XZ-6 & 14153.29 & 0.158 & 0--10 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\SubSection{压缩比选择与端到端可用时间}
+两个留出前缀上，SFS+1NN 选择了 XZ；在其四种 codec 候选中，XZ 的输出最小（relative CR 为 1.00）。采集全部四个候选探测特征在 ExaFEL 和 RCSB/mmCIF 上分别耗时 2.04 秒和 1.72 秒。在另行进行的端到端传输中，固定 XZ 的中位 $T_{\mathrm{ready}}$ 分别为 22.01 秒和 18.09 秒；CPSS 选择 Zstandard，含自身扫描与探测的完成时间分别为 2.93 秒和 1.80 秒；固定 Zstandard 为 1.85 秒和 1.05 秒，Raw 为 2.29 秒和 2.34 秒。选择器的压缩比最优与 CPSS 的传输时间选择回答了不同问题：XZ 最小化输出，完整传输路径还需支付 codec 执行和决策成本。
+
+共同 codec 候选实验中，CPSS 的中位数求和 $T_{\mathrm{ready}}$ 为 374.06 秒，Raw 为 427.26 秒，固定 Zstandard-3 为 386.62 秒；LZ4、gzip-6 和 XZ-6 分别为 438.07、548.79 和 2425.67 秒。9 次运行中 CPSS 选择 Raw 5 次、Zstandard 4 次。整体收益主要来自 NOAA 上选择 Zstandard 的压缩收益；Miranda 上 CPSS 与 Raw 相差不足 0.4\%，CESM 上 CPSS 比 Raw 慢 1.5\%。这一组补充比较将自适应动作与常见固定 codec 放在相同工作负载下衡量，并与 10 个工作负载主结果分开统计。
+
+\SubSection{工作负载差异与 Raw 绕过}
+在 10 个工作负载的主实验中，CPSS 有 32 次选择压缩、19 次选择 Raw；所有压缩动作均采用 Zstandard，这是在 Zstandard、LZ4、zlib 及 delta+Zstandard 中作出的选择。固定压缩器中只有 Zstandard 的聚合中位时间低于 Raw：LZ4 留下更多字节需要传输，XZ 则增加大量编码时间。图~\ref{fig:end-to-end}(b) 展示这一权衡。
+
+图~\ref{fig:end-to-end}(c) 展示逐工作负载结果。CPSS 在 HACC、Miranda、NYX 和 SCALE-LETKF 上绕过压缩；相对 Raw 的时间差不超过 0.8\%，相对固定 Zstandard 的完成时间缩短 5.9--17.9\%。在各分支内对逐工作负载中位数求和，CPSS 压缩分支比固定 Zstandard 多耗时 1.86\%；Raw 分支计入探测后与直接 Raw 相差不足 0.18\%。图~\ref{fig:end-to-end}(d) 展示各工作负载的探测时间占 $T_{\mathrm{ready}}$ 中位数比例。
+
+\begin{figure}[!t]
+\begin{center}
+\includegraphics[width=\linewidth]{Figures/fig3_end_to_end.pdf}
+\end{center}
+\caption{端到端性能与决策行为。(a) 相对 Raw 的整体 speedup；实心标记表示 CPSS，空心标记表示固定方法。(b) 各方法中位数求和 $T_{\mathrm{ready}}$；本地占比为扣除各工作负载网络时间中位数之和后的剩余比例。(c) 相对 Raw 的逐工作负载降低比例，两列使用相同刻度；灰色横条表示固定 Zstandard-3，黑色横条表示 CPSS 选择压缩，空心菱形表示 CPSS 绕过压缩。正值表示完成时间缩短。(d) 各工作负载的探测占比，行序与 (c) 对齐。数值/HPC 工作负载排在科学文本工作负载之前。}
+\label{fig:end-to-end}
+\end{figure}
+
+\SubSection{决策敏感性与探测成本}
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\linewidth]{Figures/fig4_experimental_analysis.pdf}
+\caption{补充系统证据。(a) 三工作负载共同 codec 候选实验的中位数求和 $T_{\mathrm{ready}}$。(b) HACC 与 NYX 上的工作负载中位时间；CPSS 每个工作负载均 3 次选择 Raw，柱组上方依次为 Raw/Zstandard/CPSS 时间。(c) 成本估计器分别使用 10 和 100 Mbps 带宽假设时的中位数求和 $T_{\mathrm{ready}}$；所有数据均经过同一未限速 GridFlux 路径，横轴给出 CPSS 动作次数。(d) 相对配对 Raw/Zstandard 实测参考的中位额外 $T_{\mathrm{ready}}$，按采样窗口上限分组；标签给出实际采样量与探测时间，每个上限对应 9 组数据集/重复观测。}
+\label{fig:additional-evidence}
+\end{figure}
+在同一未限速路径上，将估计器带宽假设从 10 改为 100 Mbps 后，CPSS 从 9 次全部选择压缩变为 6 次选择 Raw。10 Mbps 假设下，Raw、Zstandard 和 CPSS 的中位数求和时间分别为 48.70、39.05 和 42.47 秒；100 Mbps 假设下分别为 49.62、38.55 和 42.18 秒。CPSS 相对 Raw 将完成时间缩短 12.8\% 和 15.0\%，相对固定 Zstandard 增加 8.8\% 和 9.4\% 的时间。动作构成的变化体现成本模型在同一物理路径上对带宽输入的响应。
+
+采样窗口上限设为 1、2、5 时，实际采样量中位数分别为 4、8、8 MiB，探测时间中位数分别为 0.67、0.77、0.79 秒；即使上限为 5 个窗口，这些运行实际也至多使用两个窗口。CPSS 与配对 Raw/Zstandard 中较低 $T_{\mathrm{ready}}$ 动作的一致率在各设置下均为 4/9（44.4\%），相对该配对参考的中位额外 $T_{\mathrm{ready}}$ 分别为 15.9\%、12.2\%、6.2\%。三个预算下每个工作负载的动作均未改变，而增加窗口只带来有限的探测时间增量。
+
+独立的 HACC/NYX Raw 绕过实验进一步展示了大规模数值输入上的端点行为：6 次运行中 CPSS 均选择 Raw，聚合时间与直接 Raw 相差不足 0.05\%；固定 Zstandard 则慢 15.3\%。当测得的候选成本支持 Raw 时，自适应策略保留了原始传输路径。
+
+\SubSection{完整性与跨传输检查}
+306 条主实验与 231 条补充 GridFlux 实验记录均通过往返检查。27 次 SCP 重放全部完成，重建字节数正确，在 NOAA 上保留收益，在 Miranda 上接近 Raw。主实验探测时间中位数为 1.10 秒，51 次中有 50 次使用两个 4 MiB 窗口。
+
+\FloatBarrier
+\Section{结论}
+
+CPSS 将压缩视为条件性传输动作，将采样得到的编解码成本与目的端数据可用时间相联系。在 10 个工作负载中，相对 Raw 的加速比最高为 4.74 倍（NOAA），相对固定 Zstandard-3 的完成时间最高缩短 17.9\%（NYX）。针对性实验量化了 Raw 绕过、探测成本及对带宽输入的响应。这一问题定义将数据相关的压缩选择与完整的一次性传输路径连接起来。
+
+\section*{参考文献}
+\bibliographystyle{IEEEbib}
+\bibliography{refs}
+
+\end{document}
